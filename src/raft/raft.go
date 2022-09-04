@@ -167,6 +167,15 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
+func (rf *Raft) setNewTerm(newTerm int) {
+	if newTerm > rf.currentTerm || rf.currentTerm == 0 {
+		rf.currentTerm = newTerm
+		rf.votedFor = -1
+		rf.currentState = follower
+	}
+
+}
+
 //
 // example RequestVote RPC handler.
 //
@@ -174,12 +183,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	rf.mu.Unlock()
 	// Your code here (2A, 2B).
-	if rf.currentTerm > args.Term && rf.votedFor == -1 {
+	reply.Term = rf.currentTerm
+	if rf.currentTerm > args.Term {
 		reply.VoteGranted = false
-	} else {
+		return
+	}
+	rf.setNewTerm(args.Term)
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
 		reply.VoteGranted = true
 	}
-	reply.Term = rf.currentTerm
+
 }
 
 //
@@ -278,6 +291,7 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			if rf.currentState == leader {
 				rf.startHeartBeat()
+				rf.electionTimer.Reset(randomElectionTime())
 				rf.heartBeatTimer.Reset(stableHeartBeatTime())
 			}
 			rf.mu.Unlock()
@@ -291,11 +305,10 @@ func (rf *Raft) startHeartBeat() {
 		Term:     rf.currentTerm,
 		LeaderId: rf.me,
 	}
+	rf.votedFor = rf.me
 	for idx, _ := range rf.peers {
 		if idx != rf.me {
 			go rf.handleHeartBeat(idx, &request)
-		} else {
-			rf.electionTimer.Reset(randomElectionTime())
 		}
 	}
 }
@@ -306,24 +319,29 @@ func (rf *Raft) handleHeartBeat(serverId int, request *EntriesRequest) {
 	if !ok {
 		return
 	}
+	if rf.currentTerm < reply.Term {
+		rf.setNewTerm(reply.Term)
+		return
+	}
 
 }
 
 func (rf *Raft) startElection() {
-	rf.currentTerm = rf.currentTerm + 1
-	rf.currentState = candidator
-	args := RequestVoteArgs{
-		Term:        rf.currentTerm,
-		CandidateId: rf.me,
-	}
-	rf.votedFor = rf.me
-	grantedVotes := 1
-	for idx, _ := range rf.peers {
-		if idx != rf.me {
-			go rf.handleRequestVote(idx, &args, &grantedVotes)
+	if rf.currentState != leader {
+		rf.currentTerm = rf.currentTerm + 1
+		rf.currentState = candidator
+		args := RequestVoteArgs{
+			Term:        rf.currentTerm,
+			CandidateId: rf.me,
+		}
+		rf.votedFor = rf.me
+		grantedVotes := 1
+		for idx, _ := range rf.peers {
+			if idx != rf.me {
+				go rf.handleRequestVote(idx, &args, &grantedVotes)
+			}
 		}
 	}
-
 }
 
 func (rf *Raft) handleRequestVote(serverId int, args *RequestVoteArgs, grantedVotes *int) {
@@ -336,8 +354,7 @@ func (rf *Raft) handleRequestVote(serverId int, args *RequestVoteArgs, grantedVo
 	defer rf.mu.Unlock()
 	if rf.currentState == candidator {
 		if rf.currentTerm < reply.Term {
-			rf.currentTerm = reply.Term
-			rf.currentState = follower
+			rf.setNewTerm(reply.Term)
 			return
 		}
 		if reply.VoteGranted {
@@ -375,7 +392,7 @@ func (rf *Raft) AppendEntries(args *EntriesRequest, reply *EntriesReply) {
 	reply.Term = rf.currentTerm
 	reply.Success = false
 	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
+		rf.setNewTerm(args.Term)
 		return
 	}
 	if rf.currentState == candidator {
@@ -388,7 +405,7 @@ func (rf *Raft) AppendEntries(args *EntriesRequest, reply *EntriesReply) {
 }
 
 func randomElectionTime() time.Duration {
-	return time.Duration(250+rand.Intn(200)) * time.Millisecond
+	return time.Duration(250+rand.Intn(300)) * time.Millisecond
 }
 func stableHeartBeatTime() time.Duration {
 	return time.Duration(100) * time.Millisecond
