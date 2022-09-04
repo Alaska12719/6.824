@@ -393,6 +393,7 @@ func (rf *Raft) AppendEntries(args *EntriesRequest, reply *EntriesReply) {
 	reply.Success = false
 	if args.Term > rf.currentTerm {
 		rf.setNewTerm(args.Term)
+		rf.votedFor = args.LeaderId
 		return
 	}
 	if rf.currentState == candidator {
